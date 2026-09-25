@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Card, List, Tag, Button, Select, Input, Space, message, Modal, Rate, Form } from 'antd';
-import { HeartOutlined, ClockCircleOutlined, EnvironmentOutlined, UserOutlined, StarOutlined } from '@ant-design/icons';
+import { Card, List, Tag, Button, Select, Input, Space, message, Modal, Rate, Form, Alert, DatePicker, InputNumber } from 'antd';
+import { HeartOutlined, ClockCircleOutlined, EnvironmentOutlined, UserOutlined, StarOutlined, WarningOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { careNeedsApi, favoriteApi, reviewApi } from '../services/api';
+import { careNeedsApi, favoriteApi, reviewApi, healthAlertApi } from '../services/api';
 import { useAuthStore } from '../store/auth';
 import { useNavigate } from 'react-router-dom';
 
@@ -37,6 +37,14 @@ const NeedSquare = () => {
   const [reviewModal, setReviewModal] = useState(false);
   const [reviewForm] = Form.useForm();
   const [favorites, setFavorites] = useState<any[]>([]);
+  const [alerts, setAlerts] = useState<any[]>([]);
+  const [followUpModal, setFollowUpModal] = useState(false);
+  const [selectedAlert, setSelectedAlert] = useState<any>(null);
+  const [followUpForm] = Form.useForm();
+  const [measureModal, setMeasureModal] = useState(false);
+  const [measureIntent, setMeasureIntent] = useState<'save' | 'complete'>('complete');
+  const [measureSubmitting, setMeasureSubmitting] = useState(false);
+  const [measureForm] = Form.useForm();
 
   const fetchNeeds = async (params?: any) => {
     setLoading(true);
@@ -61,10 +69,30 @@ const NeedSquare = () => {
     }
   };
 
+  const fetchAlerts = async () => {
+    if (user?.role !== 'child') return;
+    try {
+      const response = await healthAlertApi.getPending();
+      setAlerts(response.data);
+    } catch (error) {
+      console.error('获取待跟进提醒失败', error);
+    }
+  };
+
   useEffect(() => {
     fetchNeeds();
     fetchFavorites();
+    fetchAlerts();
   }, []);
+
+  const refreshDetail = async (id: string) => {
+    try {
+      const response = await careNeedsApi.getDetail(id);
+      setSelectedNeed(response.data);
+    } catch (error) {
+      console.error('获取需求详情失败', error);
+    }
+  };
 
   const handleAccept = async (id: string) => {
     try {
@@ -86,14 +114,67 @@ const NeedSquare = () => {
     }
   };
 
-  const handleComplete = async (id: string) => {
+  const openMeasureModal = async (need: any, intent: 'save' | 'complete') => {
+    setMeasureIntent(intent);
+    let detail = need;
     try {
-      await careNeedsApi.complete(id);
-      message.success('服务已完成');
+      const response = await careNeedsApi.getDetail(need.id);
+      detail = response.data;
+      setSelectedNeed(detail);
+    } catch (error) {
+      setSelectedNeed(need);
+    }
+    const record = detail.health_record;
+    measureForm.resetFields();
+    measureForm.setFieldsValue({
+      systolic_pressure: record?.systolic_pressure,
+      diastolic_pressure: record?.diastolic_pressure,
+      heart_rate: record?.heart_rate,
+      measured_at: record?.measured_at ? dayjs(record.measured_at) : dayjs(),
+    });
+    setMeasureModal(true);
+  };
+
+  const handleMeasureSubmit = async (values: any) => {
+    const payload = {
+      systolic_pressure: values.systolic_pressure,
+      diastolic_pressure: values.diastolic_pressure,
+      heart_rate: values.heart_rate,
+      measured_at: values.measured_at.format('YYYY-MM-DD HH:mm:ss'),
+    };
+    setMeasureSubmitting(true);
+    try {
+      if (measureIntent === 'complete') {
+        const response = await careNeedsApi.complete(selectedNeed.id, payload);
+        if (response.data.health_record?.is_abnormal) {
+          message.warning('服务已完成，本次血压异常，已生成待跟进提醒');
+        } else {
+          message.success('服务已完成');
+        }
+      } else {
+        const response = await careNeedsApi.saveHealthRecord(selectedNeed.id, payload);
+        if (response.data.record?.is_abnormal) {
+          message.warning('测量记录已保存，血压异常已生成待跟进提醒');
+        } else {
+          message.success('测量记录已保存');
+        }
+      }
+      setMeasureModal(false);
+      measureForm.resetFields();
       fetchNeeds();
+      if (detailModal) {
+        refreshDetail(selectedNeed.id);
+      }
     } catch (error: any) {
       message.error(error.response?.data?.message || '操作失败');
+    } finally {
+      setMeasureSubmitting(false);
     }
+  };
+
+  const handleComplete = async (need: any) => {
+    // 完成订单前必须先填写本次测量记录
+    openMeasureModal(need, 'complete');
   };
 
   const handleCancel = async (id: string) => {
@@ -143,14 +224,34 @@ const NeedSquare = () => {
     }
   };
 
-  const openDetail = (need: any) => {
+  const openDetail = async (need: any) => {
     setSelectedNeed(need);
     setDetailModal(true);
+    refreshDetail(need.id);
   };
 
   const openReview = (need: any) => {
     setSelectedNeed(need);
     setReviewModal(true);
+  };
+
+  const openFollowUp = (alert: any) => {
+    setSelectedAlert(alert);
+    setFollowUpModal(true);
+  };
+
+  const handleFollowUp = async (values: any) => {
+    try {
+      await healthAlertApi.followUp(selectedAlert.id, {
+        follow_up_result: values.follow_up_result,
+      });
+      message.success('跟进结果已保存，提醒已关闭');
+      setFollowUpModal(false);
+      followUpForm.resetFields();
+      fetchAlerts();
+    } catch (error: any) {
+      message.error(error.response?.data?.message || '操作失败');
+    }
   };
 
   const handleChat = (userId: string) => {
@@ -196,6 +297,34 @@ const NeedSquare = () => {
         </Space>
       </div>
 
+      {user?.role === 'child' && alerts.length > 0 && (
+        <div className="mb-6 space-y-3">
+          {alerts.map((alert) => (
+            <Alert
+              key={alert.id}
+              type="warning"
+              showIcon
+              icon={<WarningOutlined />}
+              message={`${alert.elderly_name} 血压异常，待跟进`}
+              description={
+                <div className="text-sm">
+                  <div>异常原因：{alert.abnormal_reason}</div>
+                  <div className="text-gray-500 mt-1">
+                    血压 {alert.systolic_pressure}/{alert.diastolic_pressure} mmHg · 心率 {alert.heart_rate} 次/分 ·
+                    测量时间 {dayjs(alert.measured_at).format('YYYY-MM-DD HH:mm')} · 护工：{alert.worker_name || '未知'}
+                  </div>
+                </div>
+              }
+              action={
+                <Button type="primary" size="small" onClick={() => openFollowUp(alert)}>
+                  填写跟进结果
+                </Button>
+              }
+            />
+          ))}
+        </div>
+      )}
+
       <List
         grid={{ gutter: 16, xs: 1, sm: 2, md: 2, lg: 3, xl: 3, xxl: 4 }}
         dataSource={needs}
@@ -218,7 +347,7 @@ const NeedSquare = () => {
                   </Button>
                 ) : null,
                 item.status === 'in_progress' && item.worker_id === user?.id ? (
-                  <Button type="primary" size="small" onClick={(e) => { e.stopPropagation(); handleComplete(item.id); }}>
+                  <Button type="primary" size="small" onClick={(e) => { e.stopPropagation(); handleComplete(item); }}>
                     完成服务
                   </Button>
                 ) : null,
@@ -336,6 +465,23 @@ const NeedSquare = () => {
               </div>
             </div>
 
+            {selectedNeed.health_record && (
+              <div className={`p-4 rounded-lg ${selectedNeed.health_record.is_abnormal ? 'bg-red-50' : 'bg-cyan-50'}`}>
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="font-medium">本次测量记录</h3>
+                  {selectedNeed.health_record.is_abnormal && <Tag color="red">血压异常</Tag>}
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div>血压：{selectedNeed.health_record.systolic_pressure}/{selectedNeed.health_record.diastolic_pressure} mmHg</div>
+                  <div>心率：{selectedNeed.health_record.heart_rate} 次/分</div>
+                  <div className="col-span-2">测量时间：{dayjs(selectedNeed.health_record.measured_at).format('YYYY-MM-DD HH:mm')}</div>
+                  {selectedNeed.health_record.is_abnormal && (
+                    <div className="col-span-2 text-red-500">异常原因：{selectedNeed.health_record.abnormal_reason}</div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {selectedNeed.worker_name && (
               <div className="bg-green-50 p-4 rounded-lg">
                 <div className="flex justify-between items-center">
@@ -372,9 +518,14 @@ const NeedSquare = () => {
                 </Button>
               )}
               {selectedNeed.status === 'in_progress' && selectedNeed.worker_id === user?.id && (
-                <Button type="primary" onClick={() => handleComplete(selectedNeed.id)}>
-                  完成服务
-                </Button>
+                <>
+                  <Button onClick={() => openMeasureModal(selectedNeed, 'save')}>
+                    {selectedNeed.health_record ? '修改测量记录' : '填写测量记录'}
+                  </Button>
+                  <Button type="primary" onClick={() => handleComplete(selectedNeed)}>
+                    完成服务
+                  </Button>
+                </>
               )}
               {selectedNeed.status === 'completed' && (selectedNeed.child_id === user?.id || selectedNeed.worker_id === user?.id) && (
                 <Button onClick={() => openReview(selectedNeed)}>
@@ -389,6 +540,96 @@ const NeedSquare = () => {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        title={measureIntent === 'complete' ? '填写测量记录并完成订单' : '填写测量记录'}
+        open={measureModal}
+        onCancel={() => setMeasureModal(false)}
+        footer={null}
+        forceRender
+      >
+        {selectedNeed && (
+          <div className="mb-4 text-sm text-gray-500">
+            老人：{selectedNeed.elderly_name} · 订单：{selectedNeed.title}
+          </div>
+        )}
+        <Form form={measureForm} onFinish={handleMeasureSubmit} layout="vertical">
+          <div className="grid grid-cols-3 gap-4">
+            <Form.Item
+              name="systolic_pressure"
+              label="收缩压 (mmHg)"
+              rules={[{ required: true, message: '请输入收缩压' }]}
+            >
+              <InputNumber min={40} max={300} precision={0} placeholder="如 120" className="w-full" />
+            </Form.Item>
+            <Form.Item
+              name="diastolic_pressure"
+              label="舒张压 (mmHg)"
+              rules={[{ required: true, message: '请输入舒张压' }]}
+            >
+              <InputNumber min={20} max={200} precision={0} placeholder="如 80" className="w-full" />
+            </Form.Item>
+            <Form.Item
+              name="heart_rate"
+              label="心率 (次/分)"
+              rules={[{ required: true, message: '请输入心率' }]}
+            >
+              <InputNumber min={20} max={250} precision={0} placeholder="如 75" className="w-full" />
+            </Form.Item>
+          </div>
+          <Form.Item
+            name="measured_at"
+            label="测量时间"
+            rules={[{ required: true, message: '请选择测量时间' }]}
+          >
+            <DatePicker showTime format="YYYY-MM-DD HH:mm" className="w-full" placeholder="请选择测量时间" />
+          </Form.Item>
+          <div className="text-xs text-gray-400 mb-4">
+            收缩压 ≥ 140 或舒张压 ≥ 90 将标记为异常，并为家属生成待跟进提醒
+          </div>
+          <Form.Item className="mb-0">
+            <div className="flex justify-end space-x-3">
+              <Button onClick={() => setMeasureModal(false)}>取消</Button>
+              <Button type="primary" htmlType="submit" loading={measureSubmitting}>
+                {measureIntent === 'complete' ? '提交并完成订单' : '保存记录'}
+              </Button>
+            </div>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="填写跟进结果"
+        open={followUpModal}
+        onCancel={() => setFollowUpModal(false)}
+        footer={null}
+      >
+        {selectedAlert && (
+          <div className="mb-4 bg-orange-50 p-3 rounded-lg text-sm">
+            <div className="font-medium mb-1">{selectedAlert.elderly_name} 血压异常</div>
+            <div className="text-gray-600">异常原因：{selectedAlert.abnormal_reason}</div>
+            <div className="text-gray-500 mt-1">
+              血压 {selectedAlert.systolic_pressure}/{selectedAlert.diastolic_pressure} mmHg · 心率 {selectedAlert.heart_rate} 次/分 ·
+              测量时间 {dayjs(selectedAlert.measured_at).format('YYYY-MM-DD HH:mm')}
+            </div>
+          </div>
+        )}
+        <Form form={followUpForm} onFinish={handleFollowUp} layout="vertical">
+          <Form.Item
+            name="follow_up_result"
+            label="跟进结果"
+            rules={[{ required: true, message: '请填写跟进结果' }]}
+          >
+            <Input.TextArea rows={4} placeholder="例如：已电话询问老人身体状况，预约了社区医院复查..." />
+          </Form.Item>
+          <Form.Item className="mb-0">
+            <div className="flex justify-end space-x-3">
+              <Button onClick={() => setFollowUpModal(false)}>取消</Button>
+              <Button type="primary" htmlType="submit">提交并关闭提醒</Button>
+            </div>
+          </Form.Item>
+        </Form>
       </Modal>
 
       <Modal

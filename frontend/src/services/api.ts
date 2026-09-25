@@ -52,8 +52,18 @@ export const careNeedsApi = {
   create: (data: any) => api.post('/care-needs', data),
   accept: (id: string) => api.post(`/care-needs/${id}/accept`),
   start: (id: string) => api.post(`/care-needs/${id}/start`),
-  complete: (id: string) => api.post(`/care-needs/${id}/complete`),
+  complete: (id: string, data?: any) => api.post(`/care-needs/${id}/complete`, data),
   cancel: (id: string) => api.post(`/care-needs/${id}/cancel`),
+  saveHealthRecord: (id: string, data: any) => api.put(`/care-needs/${id}/health-record`, data),
+};
+
+export const healthRecordApi = {
+  getByElderly: (elderlyId: string) => api.get(`/health-records/elderly/${elderlyId}`),
+};
+
+export const healthAlertApi = {
+  getPending: () => api.get('/health-alerts/pending'),
+  followUp: (id: string, data: any) => api.post(`/health-alerts/${id}/follow-up`, data),
 };
 
 export const reviewApi = {

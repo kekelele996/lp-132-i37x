@@ -8,6 +8,8 @@ import reviewRoutes from './reviews';
 import messageRoutes from './messages';
 import favoriteRoutes from './favorites';
 import scheduleRoutes from './schedules';
+import healthRecordRoutes from './healthRecords';
+import healthAlertRoutes from './healthAlerts';
 
 export const registerRoutes = (app: Express): void => {
   app.use('/api/auth', authRoutes);
@@ -18,4 +20,6 @@ export const registerRoutes = (app: Express): void => {
   app.use('/api/messages', messageRoutes);
   app.use('/api/favorites', favoriteRoutes);
   app.use('/api/schedules', scheduleRoutes);
+  app.use('/api/health-records', healthRecordRoutes);
+  app.use('/api/health-alerts', healthAlertRoutes);
 };

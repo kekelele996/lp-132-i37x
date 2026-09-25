@@ -107,6 +107,35 @@ CREATE TABLE IF NOT EXISTS worker_schedules (
     UNIQUE(worker_id, date, shift_type)
 );
 
+-- 健康测量记录表 (每个订单仅一条，重复提交只留一条)
+CREATE TABLE IF NOT EXISTS health_records (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID NOT NULL UNIQUE REFERENCES care_needs(id) ON DELETE CASCADE,
+    elderly_id UUID NOT NULL REFERENCES elderly_profiles(id) ON DELETE CASCADE,
+    worker_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    systolic_pressure INTEGER NOT NULL,
+    diastolic_pressure INTEGER NOT NULL,
+    heart_rate INTEGER NOT NULL,
+    measured_at TIMESTAMP NOT NULL,
+    is_abnormal BOOLEAN DEFAULT FALSE,
+    abnormal_reason TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 健康异常跟进提醒表 (每条异常记录仅一条待跟进提醒)
+CREATE TABLE IF NOT EXISTS health_alerts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    record_id UUID NOT NULL UNIQUE REFERENCES health_records(id) ON DELETE CASCADE,
+    elderly_id UUID NOT NULL REFERENCES elderly_profiles(id) ON DELETE CASCADE,
+    child_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'closed')),
+    follow_up_result TEXT,
+    followed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 创建索引
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_elderly_child ON elderly_profiles(child_id);
@@ -119,6 +148,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(receiver_id, is_read)
 CREATE INDEX IF NOT EXISTS idx_reviews_reviewee ON reviews(reviewee_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_worker ON worker_schedules(worker_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_date ON worker_schedules(date);
+CREATE INDEX IF NOT EXISTS idx_health_records_order ON health_records(order_id);
+CREATE INDEX IF NOT EXISTS idx_health_records_elderly ON health_records(elderly_id);
+CREATE INDEX IF NOT EXISTS idx_health_records_measured_at ON health_records(measured_at);
+CREATE INDEX IF NOT EXISTS idx_health_alerts_child_status ON health_alerts(child_id, status);
+CREATE INDEX IF NOT EXISTS idx_health_alerts_elderly ON health_alerts(elderly_id);
 
 -- 插入测试数据 (密码统一为: 123456)
 INSERT INTO users (username, password, real_name, phone, role, age, address, skills, introduction) VALUES

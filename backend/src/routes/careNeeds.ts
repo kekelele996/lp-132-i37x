@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import pool from '../config/database';
 import { sendServerError } from '../utils/httpResponses';
 import { AuthRequest, authenticate, requireRole } from '../middleware/auth';
+import { hasMeasurementPayload, parseMeasurement, upsertHealthRecord } from '../utils/health';
 
 const router = Router();
 
@@ -89,7 +90,13 @@ router.get('/:id', authenticate, async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ message: '无权限查看' });
     }
 
-    res.json(need);
+    // 同步返回该订单的测量记录，护工重进订单详情也能看到
+    const recordResult = await pool.query(
+      'SELECT * FROM health_records WHERE order_id = $1',
+      [req.params.id]
+    );
+
+    res.json({ ...need, health_record: recordResult.rows[0] || null });
   } catch (error) {
     sendServerError(res, error);
   }
@@ -179,38 +186,117 @@ router.post('/:id/start', authenticate, requireRole('worker', 'volunteer'), asyn
   }
 });
 
-router.post('/:id/complete', authenticate, requireRole('worker', 'volunteer'), async (req: AuthRequest, res: Response) => {
+router.put('/:id/health-record', authenticate, requireRole('worker', 'volunteer'), async (req: AuthRequest, res: Response) => {
+  const client = await pool.connect();
   try {
-    const checkResult = await pool.query(
-      'SELECT status, worker_id, price FROM care_needs WHERE id = $1',
+    const { data, error: measureError } = parseMeasurement(req.body);
+    if (measureError || !data) {
+      return res.status(400).json({ message: measureError });
+    }
+
+    await client.query('BEGIN');
+
+    const checkResult = await client.query(
+      'SELECT id, status, worker_id, elderly_id, child_id FROM care_needs WHERE id = $1 FOR UPDATE',
       [req.params.id]
     );
 
     if (checkResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: '需求不存在' });
     }
 
-    if (checkResult.rows[0].worker_id !== req.user?.id) {
+    const order = checkResult.rows[0];
+
+    if (order.worker_id !== req.user?.id) {
+      await client.query('ROLLBACK');
       return res.status(403).json({ message: '无权限操作' });
     }
 
-    if (checkResult.rows[0].status !== 'in_progress') {
+    if (!['accepted', 'in_progress'].includes(order.status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: '订单当前状态不可填写测量记录' });
+    }
+
+    const record = await upsertHealthRecord(client, order, req.user!.id, data);
+
+    await client.query('COMMIT');
+
+    res.json({ message: '测量记录已保存', record });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    sendServerError(res, error);
+  } finally {
+    client.release();
+  }
+});
+
+router.post('/:id/complete', authenticate, requireRole('worker', 'volunteer'), async (req: AuthRequest, res: Response) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const checkResult = await client.query(
+      'SELECT id, status, worker_id, price, elderly_id, child_id FROM care_needs WHERE id = $1 FOR UPDATE',
+      [req.params.id]
+    );
+
+    if (checkResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: '需求不存在' });
+    }
+
+    const order = checkResult.rows[0];
+
+    if (order.worker_id !== req.user?.id) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ message: '无权限操作' });
+    }
+
+    if (order.status !== 'in_progress') {
+      await client.query('ROLLBACK');
       return res.status(400).json({ message: '状态不正确' });
     }
 
-    const result = await pool.query(
+    // 完成订单时允许一并提交测量数据（重复提交只保留一条）
+    if (hasMeasurementPayload(req.body)) {
+      const { data, error: measureError } = parseMeasurement(req.body);
+      if (measureError || !data) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: measureError });
+      }
+      await upsertHealthRecord(client, order, req.user!.id, data);
+    }
+
+    // 测量记录没填完，订单不能完成
+    const recordResult = await client.query(
+      'SELECT * FROM health_records WHERE order_id = $1',
+      [req.params.id]
+    );
+
+    if (recordResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: '请先填写血压、心率和测量时间，再完成订单' });
+    }
+
+    const result = await client.query(
       'UPDATE care_needs SET status = $1, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
       ['completed', req.params.id]
     );
 
-    await pool.query(
+    await client.query(
       'UPDATE users SET order_count = order_count + 1, total_income = total_income + $1 WHERE id = $2',
-      [checkResult.rows[0].price || 0, req.user?.id]
+      [order.price || 0, req.user?.id]
     );
 
-    res.json({ message: '服务已完成', need: result.rows[0] });
+    await client.query('COMMIT');
+
+    res.json({ message: '服务已完成', need: result.rows[0], health_record: recordResult.rows[0] });
   } catch (error) {
+    await client.query('ROLLBACK');
     sendServerError(res, error);
+  } finally {
+    client.release();
   }
 });
 

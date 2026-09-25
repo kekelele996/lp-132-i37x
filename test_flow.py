@@ -19,7 +19,7 @@
 4. worker1 (护工) 登录
 5. worker1 接单
 6. worker1 开始服务
-7. worker1 完成服务
+7. worker1 填写血压测量记录并完成服务
 8. child1 评价服务
 """
 
@@ -122,12 +122,20 @@ def start_service(token, need_id):
 
 
 def complete_service(token, need_id):
-    """完成服务"""
+    """完成服务（完成订单前需填写血压、心率和测量时间）"""
     url = f"{BASE_URL}/care-needs/{need_id}/complete"
-    response = requests.post(url, headers=get_headers(token))
+    data = {
+        "systolic_pressure": 120,
+        "diastolic_pressure": 80,
+        "heart_rate": 72,
+        "measured_at": "2025-06-18 10:30:00"
+    }
+    response = requests.post(url, headers=get_headers(token), json=data)
     result = response.json()
     if "need" in result:
-        print(f"✓ 完成服务成功，需求ID: {need_id}")
+        record = result.get("health_record") or {}
+        print(f"✓ 完成服务成功，需求ID: {need_id}，测量记录: "
+              f"{record.get('systolic_pressure')}/{record.get('diastolic_pressure')}mmHg")
         return True
     else:
         print(f"✗ 完成服务失败: {result}")

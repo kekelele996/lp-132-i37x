@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Table, Button, Modal, Form, Input, Select, Space, message, Card, Tag } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined } from '@ant-design/icons';
-import { elderlyApi } from '../services/api';
+import { Table, Button, Modal, Form, Input, Select, Space, message, Card, Tag, Timeline, Empty, Spin } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, MedicineBoxOutlined } from '@ant-design/icons';
+import dayjs from 'dayjs';
+import { elderlyApi, healthRecordApi } from '../services/api';
 
 const { Option } = Select;
 const { TextArea } = Input;
@@ -12,6 +13,10 @@ const ElderlyProfile = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<any>(null);
   const [form] = Form.useForm();
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  const [timelineRecords, setTimelineRecords] = useState<any[]>([]);
+  const [timelineElderlyName, setTimelineElderlyName] = useState('');
+  const [timelineLoading, setTimelineLoading] = useState(false);
 
   const fetchProfiles = async () => {
     setLoading(true);
@@ -73,6 +78,20 @@ const ElderlyProfile = () => {
     }
   };
 
+  const openTimeline = async (record: any) => {
+    setTimelineOpen(true);
+    setTimelineElderlyName(record.name);
+    setTimelineLoading(true);
+    try {
+      const response = await healthRecordApi.getByElderly(record.id);
+      setTimelineRecords(response.data.records);
+    } catch (error) {
+      message.error('获取健康记录失败');
+    } finally {
+      setTimelineLoading(false);
+    }
+  };
+
   const columns = [
     {
       title: '姓名',
@@ -121,6 +140,9 @@ const ElderlyProfile = () => {
       key: 'action',
       render: (_: any, record: any) => (
         <Space>
+          <Button type="link" icon={<MedicineBoxOutlined />} onClick={() => openTimeline(record)}>
+            健康记录
+          </Button>
           <Button type="link" icon={<EditOutlined />} onClick={() => handleEdit(record)}>
             编辑
           </Button>
@@ -241,6 +263,54 @@ const ElderlyProfile = () => {
             </div>
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={`${timelineElderlyName} 的健康记录`}
+        open={timelineOpen}
+        onCancel={() => setTimelineOpen(false)}
+        footer={null}
+        width={640}
+      >
+        <Spin spinning={timelineLoading}>
+          {timelineRecords.length === 0 && !timelineLoading ? (
+            <Empty description="暂无测量记录" />
+          ) : (
+            <Timeline
+              className="mt-4"
+              items={timelineRecords.map((record) => ({
+                color: record.is_abnormal ? 'red' : 'green',
+                children: (
+                  <div>
+                    <div className="font-medium">
+                      {dayjs(record.measured_at).format('YYYY-MM-DD HH:mm')}
+                      {record.is_abnormal && <Tag color="red" className="ml-2">异常</Tag>}
+                      {!record.is_abnormal && <Tag color="green" className="ml-2">正常</Tag>}
+                    </div>
+                    <div className="mt-1">
+                      血压 {record.systolic_pressure}/{record.diastolic_pressure} mmHg · 心率 {record.heart_rate} 次/分
+                    </div>
+                    {record.is_abnormal && (
+                      <div className="text-red-500 mt-1">异常原因：{record.abnormal_reason}</div>
+                    )}
+                    <div className="text-gray-400 text-sm mt-1">
+                      订单：{record.order_title || '未知'} · 护工：{record.worker_name || '未知'}
+                    </div>
+                    {record.alert_status === 'pending' && (
+                      <Tag color="orange" className="mt-1">待跟进</Tag>
+                    )}
+                    {record.alert_status === 'closed' && (
+                      <div className="text-gray-500 text-sm mt-1">
+                        跟进结果：{record.follow_up_result}
+                        {record.followed_at && `（${dayjs(record.followed_at).format('YYYY-MM-DD HH:mm')}）`}
+                      </div>
+                    )}
+                  </div>
+                ),
+              }))}
+            />
+          )}
+        </Spin>
       </Modal>
     </div>
   );

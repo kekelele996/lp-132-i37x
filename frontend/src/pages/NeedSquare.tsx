@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Card, List, Tag, Button, Select, Input, Space, message, Modal, Rate, Form } from 'antd';
-import { HeartOutlined, ClockCircleOutlined, EnvironmentOutlined, UserOutlined, StarOutlined } from '@ant-design/icons';
+import { Card, List, Tag, Button, Select, Input, Space, message, Modal, Rate, Form, InputNumber, DatePicker, Alert } from 'antd';
+import { HeartOutlined, ClockCircleOutlined, EnvironmentOutlined, UserOutlined, StarOutlined, AlertOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { careNeedsApi, favoriteApi, reviewApi } from '../services/api';
+import { careNeedsApi, favoriteApi, reviewApi, vitalRecordApi } from '../services/api';
 import { useAuthStore } from '../store/auth';
 import { useNavigate } from 'react-router-dom';
 
@@ -37,6 +37,13 @@ const NeedSquare = () => {
   const [reviewModal, setReviewModal] = useState(false);
   const [reviewForm] = Form.useForm();
   const [favorites, setFavorites] = useState<any[]>([]);
+  const [vitalModalOpen, setVitalModalOpen] = useState(false);
+  const [vitalForm] = Form.useForm();
+  const [vitalSaving, setVitalSaving] = useState(false);
+  const [followupTarget, setFollowupTarget] = useState<any>(null);
+  const [followupResult, setFollowupResult] = useState('');
+  const [followupSaving, setFollowupSaving] = useState(false);
+  const [pendingFollowups, setPendingFollowups] = useState<any[]>([]);
 
   const fetchNeeds = async (params?: any) => {
     setLoading(true);
@@ -61,10 +68,31 @@ const NeedSquare = () => {
     }
   };
 
+  const fetchPendingFollowups = async () => {
+    if (user?.role !== 'child') return;
+    try {
+      const response = await vitalRecordApi.getPendingFollowups();
+      setPendingFollowups(response.data);
+    } catch (error) {
+      console.error('获取待跟进提醒失败', error);
+    }
+  };
+
   useEffect(() => {
     fetchNeeds();
     fetchFavorites();
+    fetchPendingFollowups();
   }, []);
+
+  const refreshDetail = async (id: string) => {
+    try {
+      const response = await careNeedsApi.getDetail(id);
+      setSelectedNeed(response.data);
+      return response.data;
+    } catch {
+      return null;
+    }
+  };
 
   const handleAccept = async (id: string) => {
     try {
@@ -86,13 +114,92 @@ const NeedSquare = () => {
     }
   };
 
-  const handleComplete = async (id: string) => {
+  const completeOrder = async (id: string) => {
     try {
       await careNeedsApi.complete(id);
       message.success('服务已完成');
+      setVitalModalOpen(false);
       fetchNeeds();
+      const detail = await refreshDetail(id);
+      if (!detail) {
+        setDetailModal(false);
+      }
     } catch (error: any) {
       message.error(error.response?.data?.message || '操作失败');
+    }
+  };
+
+  // 健康检查（量血压）订单必须先填写血压、心率和测量时间；其他类型直接完成
+  const handleComplete = async (id: string) => {
+    try {
+      const detail = await careNeedsApi.getDetail(id);
+      const need = detail.data;
+      if (need.care_type === 'health_check') {
+        setSelectedNeed(need);
+        openVitalModal(need);
+      } else {
+        await completeOrder(id);
+      }
+    } catch (error: any) {
+      message.error(error.response?.data?.message || '操作失败');
+    }
+  };
+
+  const openVitalModal = (need: any) => {
+    const record = need.vital_record;
+    vitalForm.setFieldsValue(
+      record
+        ? {
+            systolic: record.systolic,
+            diastolic: record.diastolic,
+            heart_rate: record.heart_rate,
+            measured_at: dayjs(record.measured_at),
+          }
+        : { measured_at: dayjs() }
+    );
+    setVitalModalOpen(true);
+  };
+
+  const handleVitalSubmit = async () => {
+    try {
+      const values = await vitalForm.validateFields();
+      setVitalSaving(true);
+      await careNeedsApi.submitVitalRecord(selectedNeed.id, {
+        systolic: values.systolic,
+        diastolic: values.diastolic,
+        heart_rate: values.heart_rate,
+        measured_at: values.measured_at.format('YYYY-MM-DD HH:mm:ss'),
+      });
+      message.success('测量记录已保存，正在完成订单');
+      await completeOrder(selectedNeed.id);
+    } catch (error: any) {
+      if (error?.errorFields) return;
+      message.error(error.response?.data?.message || '测量记录保存失败');
+    } finally {
+      setVitalSaving(false);
+    }
+  };
+
+  const handleFollowUp = async () => {
+    if (!followupResult.trim()) {
+      message.warning('请填写跟进结果');
+      return;
+    }
+    setFollowupSaving(true);
+    try {
+      await vitalRecordApi.followUp(followupTarget.id, followupResult.trim());
+      message.success('跟进完成，提醒已关闭');
+      setFollowupTarget(null);
+      setFollowupResult('');
+      fetchPendingFollowups();
+      fetchNeeds();
+      if (selectedNeed) {
+        refreshDetail(selectedNeed.id);
+      }
+    } catch (error: any) {
+      message.error(error.response?.data?.message || '跟进失败');
+    } finally {
+      setFollowupSaving(false);
     }
   };
 
@@ -143,9 +250,11 @@ const NeedSquare = () => {
     }
   };
 
-  const openDetail = (need: any) => {
-    setSelectedNeed(need);
+  const openDetail = async (need: any) => {
     setDetailModal(true);
+    setSelectedNeed(need);
+    // 重进订单详情时拉取最新数据，同步护工已填写的测量记录
+    await refreshDetail(need.id);
   };
 
   const openReview = (need: any) => {
@@ -195,6 +304,44 @@ const NeedSquare = () => {
           />
         </Space>
       </div>
+
+      {user?.role === 'child' && pendingFollowups.length > 0 && (
+        <Alert
+          className="mb-4"
+          type="error"
+          showIcon
+          icon={<AlertOutlined />}
+          message={`有 ${pendingFollowups.length} 条血压异常待跟进提醒`}
+          description={
+            <Space direction="vertical" className="w-full" size={4}>
+              {pendingFollowups.map((item) => (
+                <div key={item.id} className="flex justify-between items-center w-full">
+                  <span className="text-sm">
+                    <Tag color="red">异常</Tag>
+                    <b>{item.elderly_name}</b>
+                    <span className="text-gray-500"> · {item.order_title} · </span>
+                    {item.systolic}/{item.diastolic} mmHg
+                    <span className="text-gray-400">
+                      {' '}（{dayjs(item.measured_at).format('MM-DD HH:mm')}，{item.worker_name} 测量）
+                    </span>
+                  </span>
+                  <Button
+                    size="small"
+                    danger
+                    type="primary"
+                    onClick={() => {
+                      setFollowupTarget(item);
+                      setFollowupResult('');
+                    }}
+                  >
+                    填写跟进结果
+                  </Button>
+                </div>
+              ))}
+            </Space>
+          }
+        />
+      )}
 
       <List
         grid={{ gutter: 16, xs: 1, sm: 2, md: 2, lg: 3, xl: 3, xxl: 4 }}
@@ -360,6 +507,82 @@ const NeedSquare = () => {
               </div>
             )}
 
+            {selectedNeed.vital_record && (
+              <div className={`p-4 rounded-lg ${selectedNeed.vital_record.is_abnormal ? 'bg-red-50' : 'bg-green-50'}`}>
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="font-medium">血压测量记录</h3>
+                  {selectedNeed.vital_record.is_abnormal ? (
+                    <Tag color="red">异常</Tag>
+                  ) : (
+                    <Tag color="green">正常</Tag>
+                  )}
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-sm mb-2">
+                  <div>
+                    收缩压：
+                    <b className={selectedNeed.vital_record.is_abnormal && selectedNeed.vital_record.systolic >= 140 ? 'text-red-600' : ''}>
+                      {selectedNeed.vital_record.systolic} mmHg
+                    </b>
+                  </div>
+                  <div>
+                    舒张压：
+                    <b className={selectedNeed.vital_record.is_abnormal && selectedNeed.vital_record.diastolic >= 90 ? 'text-red-600' : ''}>
+                      {selectedNeed.vital_record.diastolic} mmHg
+                    </b>
+                  </div>
+                  <div>心率：<b>{selectedNeed.vital_record.heart_rate} 次/分</b></div>
+                </div>
+                <div className="text-sm text-gray-500">
+                  测量时间：{dayjs(selectedNeed.vital_record.measured_at).format('YYYY-MM-DD HH:mm')}
+                </div>
+                {selectedNeed.vital_record.is_abnormal && (
+                  <div className="text-sm text-red-600 mt-1">
+                    异常原因：{selectedNeed.vital_record.abnormal_reason}
+                  </div>
+                )}
+                {selectedNeed.vital_record.follow_up_status === 'pending' && (
+                  <div className="mt-2 flex items-center justify-between">
+                    <Tag color="orange">待跟进</Tag>
+                    {user?.role === 'child' && (
+                      <Button
+                        size="small"
+                        danger
+                        type="primary"
+                        onClick={() => {
+                          setFollowupTarget(selectedNeed.vital_record);
+                          setFollowupResult('');
+                        }}
+                      >
+                        填写跟进结果
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {selectedNeed.vital_record.follow_up_status === 'closed' && (
+                  <div className="mt-2 text-sm bg-white rounded p-2">
+                    <Tag color="default">跟进已关闭</Tag>
+                    <span className="text-gray-700">{selectedNeed.vital_record.follow_up_result}</span>
+                    <span className="text-gray-400 ml-2">
+                      {selectedNeed.vital_record.followed_up_at
+                        ? dayjs(selectedNeed.vital_record.followed_up_at).format('YYYY-MM-DD HH:mm')
+                        : ''}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedNeed.status === 'in_progress' &&
+              selectedNeed.care_type === 'health_check' &&
+              selectedNeed.worker_id === user?.id &&
+              !selectedNeed.vital_record && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="完成订单前请先填写血压、心率和测量时间"
+                />
+              )}
+
             <div className="flex justify-end space-x-3 pt-4">
               {selectedNeed.status === 'pending' && (user?.role === 'worker' || user?.role === 'volunteer') && (
                 <Button type="primary" onClick={() => handleAccept(selectedNeed.id)}>
@@ -415,6 +638,88 @@ const NeedSquare = () => {
             </div>
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="填写血压测量记录"
+        open={vitalModalOpen}
+        onCancel={() => setVitalModalOpen(false)}
+        onOk={handleVitalSubmit}
+        confirmLoading={vitalSaving}
+        okText="保存并完成订单"
+        cancelText="取消"
+        width={480}
+      >
+        <Alert
+          className="mb-4"
+          type="info"
+          showIcon
+          message="收缩压 ≥ 140 或 舒张压 ≥ 90 将自动标记异常并通知家属跟进。重复提交只保留一条记录。"
+        />
+        <Form form={vitalForm} layout="vertical">
+          <div className="grid grid-cols-2 gap-4">
+            <Form.Item
+              name="systolic"
+              label="收缩压（高压，mmHg）"
+              rules={[{ required: true, message: '请输入收缩压' }]}
+            >
+              <InputNumber min={50} max={300} precision={0} className="w-full" placeholder="如 125" />
+            </Form.Item>
+            <Form.Item
+              name="diastolic"
+              label="舒张压（低压，mmHg）"
+              rules={[{ required: true, message: '请输入舒张压' }]}
+            >
+              <InputNumber min={30} max={200} precision={0} className="w-full" placeholder="如 80" />
+            </Form.Item>
+          </div>
+          <Form.Item
+            name="heart_rate"
+            label="心率（次/分）"
+            rules={[{ required: true, message: '请输入心率' }]}
+          >
+            <InputNumber min={30} max={250} precision={0} className="w-full" placeholder="如 72" />
+          </Form.Item>
+          <Form.Item
+            name="measured_at"
+            label="测量时间"
+            rules={[{ required: true, message: '请选择测量时间' }]}
+          >
+            <DatePicker showTime className="w-full" format="YYYY-MM-DD HH:mm" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="血压异常跟进"
+        open={!!followupTarget}
+        onCancel={() => setFollowupTarget(null)}
+        onOk={handleFollowUp}
+        confirmLoading={followupSaving}
+        okText="提交并关闭提醒"
+        cancelText="取消"
+        width={520}
+      >
+        {followupTarget && (
+          <div className="space-y-3">
+            <Alert
+              type="error"
+              showIcon
+              message={`${followupTarget.systolic}/${followupTarget.diastolic} mmHg · 心率 ${followupTarget.heart_rate} 次/分`}
+              description={followupTarget.abnormal_reason}
+            />
+            <div className="text-sm text-gray-500">
+              老人：{followupTarget.elderly_name} ｜ 测量时间：
+              {dayjs(followupTarget.measured_at).format('YYYY-MM-DD HH:mm')}
+            </div>
+            <Input.TextArea
+              rows={4}
+              placeholder="请填写跟进结果，例如：已电话联系老人，复测血压 135/85，提醒按时服药"
+              value={followupResult}
+              onChange={(e) => setFollowupResult(e.target.value)}
+            />
+          </div>
+        )}
       </Modal>
     </div>
   );

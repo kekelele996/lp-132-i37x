@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Table, Button, Modal, Form, Input, Select, Space, message, Card, Tag } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined } from '@ant-design/icons';
-import { elderlyApi } from '../services/api';
+import { Table, Button, Modal, Form, Input, Select, Space, message, Card, Tag, Drawer, Timeline, Empty, Alert } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, HeartOutlined } from '@ant-design/icons';
+import dayjs from 'dayjs';
+import { elderlyApi, vitalRecordApi } from '../services/api';
 
 const { Option } = Select;
 const { TextArea } = Input;
@@ -12,6 +13,13 @@ const ElderlyProfile = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<any>(null);
   const [form] = Form.useForm();
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  const [timelineProfile, setTimelineProfile] = useState<any>(null);
+  const [vitalRecords, setVitalRecords] = useState<any[]>([]);
+  const [vitalLoading, setVitalLoading] = useState(false);
+  const [followupTarget, setFollowupTarget] = useState<any>(null);
+  const [followupResult, setFollowupResult] = useState('');
+  const [followupSaving, setFollowupSaving] = useState(false);
 
   const fetchProfiles = async () => {
     setLoading(true);
@@ -73,6 +81,43 @@ const ElderlyProfile = () => {
     }
   };
 
+  const fetchVitalRecords = async (elderlyId: string) => {
+    setVitalLoading(true);
+    try {
+      const response = await vitalRecordApi.getByElderly(elderlyId);
+      setVitalRecords(response.data);
+    } catch (error: any) {
+      message.error(error.response?.data?.message || '获取健康记录失败');
+    } finally {
+      setVitalLoading(false);
+    }
+  };
+
+  const openTimeline = (record: any) => {
+    setTimelineProfile(record);
+    setTimelineOpen(true);
+    fetchVitalRecords(record.id);
+  };
+
+  const handleFollowUp = async () => {
+    if (!followupResult.trim()) {
+      message.warning('请填写跟进结果');
+      return;
+    }
+    setFollowupSaving(true);
+    try {
+      await vitalRecordApi.followUp(followupTarget.id, followupResult.trim());
+      message.success('跟进完成，提醒已关闭');
+      setFollowupTarget(null);
+      setFollowupResult('');
+      fetchVitalRecords(timelineProfile.id);
+    } catch (error: any) {
+      message.error(error.response?.data?.message || '跟进失败');
+    } finally {
+      setFollowupSaving(false);
+    }
+  };
+
   const columns = [
     {
       title: '姓名',
@@ -121,6 +166,9 @@ const ElderlyProfile = () => {
       key: 'action',
       render: (_: any, record: any) => (
         <Space>
+          <Button type="link" icon={<HeartOutlined />} onClick={() => openTimeline(record)}>
+            健康时间线
+          </Button>
           <Button type="link" icon={<EditOutlined />} onClick={() => handleEdit(record)}>
             编辑
           </Button>
@@ -158,6 +206,99 @@ const ElderlyProfile = () => {
           }}
         />
       </Card>
+
+      <Drawer
+        title={timelineProfile ? `${timelineProfile.name} 的健康时间线` : '健康时间线'}
+        open={timelineOpen}
+        onClose={() => setTimelineOpen(false)}
+        width={560}
+      >
+        {vitalLoading ? (
+          <div className="text-gray-400 text-center py-8">加载中...</div>
+        ) : vitalRecords.length === 0 ? (
+          <Empty description="暂无血压测量记录" />
+        ) : (
+          <Timeline
+            items={vitalRecords.map((item) => ({
+              color: item.is_abnormal ? 'red' : 'green',
+              children: (
+                <div className="pb-2">
+                  <div className="flex justify-between items-center">
+                    <span className="font-medium">
+                      {item.systolic}/{item.diastolic} mmHg
+                      <span className="text-gray-500 font-normal ml-2">心率 {item.heart_rate} 次/分</span>
+                    </span>
+                    {item.is_abnormal ? <Tag color="red">异常</Tag> : <Tag color="green">正常</Tag>}
+                  </div>
+                  <div className="text-sm text-gray-500 mt-1">
+                    测量时间：{dayjs(item.measured_at).format('YYYY-MM-DD HH:mm')} ｜ 护工：{item.worker_name || '未知'}
+                  </div>
+                  {item.is_abnormal && (
+                    <Alert
+                      className="mt-2"
+                      type="error"
+                      showIcon
+                      message={`异常原因：${item.abnormal_reason}`}
+                    />
+                  )}
+                  {item.follow_up_status === 'pending' && (
+                    <div className="mt-2 flex items-center justify-between">
+                      <Tag color="orange">待跟进</Tag>
+                      <Button
+                        size="small"
+                        danger
+                        type="primary"
+                        onClick={() => {
+                          setFollowupTarget(item);
+                          setFollowupResult('');
+                        }}
+                      >
+                        填写跟进结果
+                      </Button>
+                    </div>
+                  )}
+                  {item.follow_up_status === 'closed' && (
+                    <div className="mt-2 text-sm bg-gray-50 rounded p-2">
+                      <Tag color="default">跟进已关闭</Tag>
+                      <div className="text-gray-700 mt-1">{item.follow_up_result}</div>
+                      <div className="text-gray-400 text-xs mt-1">
+                        {item.followed_up_name} · {item.followed_up_at ? dayjs(item.followed_up_at).format('YYYY-MM-DD HH:mm') : ''}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ),
+            }))}
+          />
+        )}
+      </Drawer>
+
+      <Modal
+        title="血压异常跟进"
+        open={!!followupTarget}
+        onCancel={() => setFollowupTarget(null)}
+        onOk={handleFollowUp}
+        confirmLoading={followupSaving}
+        okText="提交并关闭提醒"
+        cancelText="取消"
+      >
+        {followupTarget && (
+          <div className="space-y-3">
+            <Alert
+              type="error"
+              showIcon
+              message={`${followupTarget.systolic}/${followupTarget.diastolic} mmHg · 心率 ${followupTarget.heart_rate} 次/分`}
+              description={followupTarget.abnormal_reason}
+            />
+            <Input.TextArea
+              rows={4}
+              placeholder="请填写跟进结果，例如：已联系老人复测并提醒按时服药"
+              value={followupResult}
+              onChange={(e) => setFollowupResult(e.target.value)}
+            />
+          </div>
+        )}
+      </Modal>
 
       <Modal
         title={editingProfile ? '编辑老人档案' : '添加老人档案'}

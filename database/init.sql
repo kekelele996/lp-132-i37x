@@ -95,6 +95,27 @@ CREATE TABLE IF NOT EXISTS favorite_workers (
     UNIQUE(child_id, worker_id)
 );
 
+-- 体征测量记录表（上门量血压等，每单至多一条）
+CREATE TABLE IF NOT EXISTS vital_records (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID NOT NULL UNIQUE REFERENCES care_needs(id) ON DELETE CASCADE,
+    child_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    elderly_id UUID NOT NULL REFERENCES elderly_profiles(id) ON DELETE CASCADE,
+    worker_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    systolic INTEGER NOT NULL CHECK (systolic BETWEEN 50 AND 300),
+    diastolic INTEGER NOT NULL CHECK (diastolic BETWEEN 30 AND 200),
+    heart_rate INTEGER NOT NULL CHECK (heart_rate BETWEEN 30 AND 250),
+    measured_at TIMESTAMP NOT NULL,
+    is_abnormal BOOLEAN NOT NULL DEFAULT FALSE,
+    abnormal_reason VARCHAR(255),
+    follow_up_status VARCHAR(20) NOT NULL DEFAULT 'none' CHECK (follow_up_status IN ('none', 'pending', 'closed')),
+    follow_up_result TEXT,
+    followed_up_by UUID REFERENCES users(id),
+    followed_up_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 护工排班表
 CREATE TABLE IF NOT EXISTS worker_schedules (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -119,6 +140,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(receiver_id, is_read)
 CREATE INDEX IF NOT EXISTS idx_reviews_reviewee ON reviews(reviewee_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_worker ON worker_schedules(worker_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_date ON worker_schedules(date);
+CREATE INDEX IF NOT EXISTS idx_vital_elderly ON vital_records(elderly_id, measured_at);
+CREATE INDEX IF NOT EXISTS idx_vital_child_followup ON vital_records(child_id, follow_up_status);
 
 -- 插入测试数据 (密码统一为: 123456)
 INSERT INTO users (username, password, real_name, phone, role, age, address, skills, introduction) VALUES
@@ -134,3 +157,21 @@ INSERT INTO elderly_profiles (child_id, name, gender, age, phone, medical_histor
 INSERT INTO care_needs (child_id, elderly_id, title, description, care_type, start_time, address, duration_hours, price) VALUES
 ((SELECT id FROM users WHERE username = 'child1'), (SELECT id FROM elderly_profiles WHERE name = '张大爷'), '上门量血压', '每周三下午上门给老人量血压，记录数据', 'health_check', '2024-01-10 14:00:00', '北京市朝阳区幸福小区3号楼2单元501', 1.0, 80.00),
 ((SELECT id FROM users WHERE username = 'child1'), (SELECT id FROM elderly_profiles WHERE name = '张大爷'), '陪同就医', '下周一陪同老人去医院复查', 'accompany', '2024-01-15 08:00:00', '北京市朝阳区幸福小区3号楼2单元501', 4.0, 300.00);
+
+-- 演示数据：将“上门量血压”订单置为已完成，并补一条血压正常的测量记录
+UPDATE care_needs
+SET status = 'completed',
+    worker_id = (SELECT id FROM users WHERE username = 'worker1'),
+    accepted_at = start_time,
+    completed_at = start_time + INTERVAL '1 hour'
+WHERE care_type = 'health_check'
+  AND child_id = (SELECT id FROM users WHERE username = 'child1')
+  AND elderly_id = (SELECT id FROM elderly_profiles WHERE name = '张大爷');
+
+INSERT INTO vital_records (order_id, child_id, elderly_id, worker_id, systolic, diastolic, heart_rate, measured_at, is_abnormal, abnormal_reason, follow_up_status)
+SELECT cn.id, cn.child_id, cn.elderly_id, cn.worker_id, 128, 82, 72, cn.completed_at, FALSE, NULL, 'none'
+FROM care_needs cn
+WHERE cn.care_type = 'health_check'
+  AND cn.child_id = (SELECT id FROM users WHERE username = 'child1')
+  AND cn.elderly_id = (SELECT id FROM elderly_profiles WHERE name = '张大爷')
+  AND NOT EXISTS (SELECT 1 FROM vital_records vr WHERE vr.order_id = cn.id);

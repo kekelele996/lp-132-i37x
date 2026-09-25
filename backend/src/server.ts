@@ -7,6 +7,7 @@ import { messages } from './constants/messages';
 import { logger } from './utils/logger';
 import { registerSocketHandlers } from './socket';
 import pool from './config/database';
+import { ensureVitalRecordsTable } from './config/ensureSchema';
 
 const app = createApp();
 const server = http.createServer(app);
@@ -23,6 +24,8 @@ const startServer = async () => {
   try {
     await pool.query('SELECT NOW()');
     logger.info(messages.errors.databaseConnected);
+
+    await ensureVitalRecordsTable();
 
     server.listen(env.port, () => {
       logger.info(`服务器运行在端口 ${env.port}`);

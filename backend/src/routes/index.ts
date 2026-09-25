@@ -8,6 +8,7 @@ import reviewRoutes from './reviews';
 import messageRoutes from './messages';
 import favoriteRoutes from './favorites';
 import scheduleRoutes from './schedules';
+import vitalRecordsRoutes from './vitalRecords';
 
 export const registerRoutes = (app: Express): void => {
   app.use('/api/auth', authRoutes);
@@ -18,4 +19,5 @@ export const registerRoutes = (app: Express): void => {
   app.use('/api/messages', messageRoutes);
   app.use('/api/favorites', favoriteRoutes);
   app.use('/api/schedules', scheduleRoutes);
+  app.use('/api/vital-records', vitalRecordsRoutes);
 };

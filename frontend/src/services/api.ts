@@ -54,6 +54,15 @@ export const careNeedsApi = {
   start: (id: string) => api.post(`/care-needs/${id}/start`),
   complete: (id: string) => api.post(`/care-needs/${id}/complete`),
   cancel: (id: string) => api.post(`/care-needs/${id}/cancel`),
+  submitVitalRecord: (id: string, data: any) => api.post(`/care-needs/${id}/vital-record`, data),
+  getVitalRecord: (id: string) => api.get(`/care-needs/${id}/vital-record`),
+};
+
+export const vitalRecordApi = {
+  getByElderly: (elderlyId: string) => api.get(`/vital-records/by-elderly/${elderlyId}`),
+  getPendingFollowups: () => api.get('/vital-records/pending-followups'),
+  followUp: (id: string, followUpResult: string) =>
+    api.post(`/vital-records/${id}/follow-up`, { follow_up_result: followUpResult }),
 };
 
 export const reviewApi = {
